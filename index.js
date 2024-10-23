@@ -24,12 +24,6 @@ const adventures = [
   'Defeat the evil wizard at the forest’s exit.',
 ];
 
-// Helper to limit sentences to 2-3
-const limitSentences = (text) => {
-  const sentences = text.split('. ').slice(0, 3);
-  return sentences.join('. ').trim() + '.';
-};
-
 // Route to start the adventure
 app.post('/start', async (req, res) => {
   const { character } = req.body;
@@ -47,8 +41,24 @@ app.post('/start', async (req, res) => {
   };
 
   const prompt = `
-    You are a ${gameState.character} on a quest: ${gameState.scenario}.
-    Describe the opening scene in 2-3 sentences. Provide two distinct options: A and B.
+    Welcome to a choose-your-own-adventure game! You are a ${gameState.character} on a quest: ${gameState.scenario}.
+    The adventure will be made up of exactly 6 decisions. The fourth decision will introduce the main challenge or climax, 
+    and the sixth decision will determine whether the adventure ends successfully or not.
+
+    Each scene will unfold in exactly two sentences:
+    - The first sentence sets the scene.
+    - The second sentence presents the player's next action options.
+
+    Keep the story focused on the original quest: "${gameState.scenario}".
+
+    Please respond ONLY in the following JSON format (no additional text or explanations):
+    {
+      "scene": "The description of the scene in two sentences.",
+      "options": {
+        "A": "First action option.",
+        "B": "Second action option."
+      }
+    }
   `;
 
   try {
@@ -64,19 +74,40 @@ app.post('/start', async (req, res) => {
     );
 
     const content = response.data.choices[0].message.content.trim();
-    const [scene, optionA, optionB] = content.split('\n').map((line) => line.trim());
+    let parsedResponse;
+
+    try {
+      // Attempt to parse JSON content
+      const sanitizedContent = content.replace(/^[^{]*|[^}]*$/g, '');
+      parsedResponse = JSON.parse(sanitizedContent);
+    } catch (parseError) {
+      console.warn('Failed to parse JSON. Falling back to manual extraction.');
+
+      const lines = content.split('\n').map(line => line.trim()).filter(line => line);
+      const scene = lines[0];
+      const optionA = lines[1]?.replace(/^A:\s*/, '') || 'Option A not found.';
+      const optionB = lines[2]?.replace(/^B:\s*/, '') || 'Option B not found.';
+
+      parsedResponse = { scene, options: { A: optionA, B: optionB } };
+    }
+
+    const { scene, options } = parsedResponse;
+
+    if (!options.A || !options.B) {
+      throw new Error('Missing options A or B in the response.');
+    }
 
     gameState.progress.push({ choice: 'start', result: scene });
 
     res.json({
       message: `You are a ${character}. Your adventure: ${gameState.scenario}`,
-      scene: limitSentences(scene),
-      optionA,
-      optionB,
+      scene,
+      optionA: options.A,
+      optionB: options.B,
     });
   } catch (error) {
     console.error('Error generating first scene:', error);
-    res.status(500).send('Error starting adventure.');
+    res.status(500).send('Error starting adventure. Please try again.');
   }
 });
 
@@ -92,13 +123,26 @@ app.post('/adventure', async (req, res) => {
     return res.status(400).json({ error: 'Invalid choice. Please choose A or B.' });
   }
 
-  const context = gameState.progress.map((step) => step.result).join('\n');
+  const context = gameState.progress.map(step => step.result).join('\n');
 
   const prompt = `
-    Continue the story based on the previous scenes:
+    Continue the choose-your-own-adventure story based on the previous scenes:
     ${context}
-    This is choice #${gameState.currentChoice}. The player chose: ${choice}.
-    Write the next part in 2-3 sentences. Provide two new options: A and B, unless this is the final scene.
+    This is decision #${gameState.currentChoice}. The player chose: ${choice}.
+
+    Remember:
+    - Keep the story focused on the original quest: "${gameState.scenario}".
+    - The story should build towards a climax by decision 4.
+    - The sixth and final decision will determine whether the quest ends successfully or not.
+
+    Please respond ONLY in the following JSON format (no additional text or explanations):
+    {
+      "scene": "The description of the scene in two sentences.",
+      "options": {
+        "A": "First action option.",
+        "B": "Second action option."
+      }
+    }
   `;
 
   try {
@@ -114,10 +158,29 @@ app.post('/adventure', async (req, res) => {
     );
 
     const content = response.data.choices[0].message.content.trim();
-    const [scene, optionA, optionB] = content.split('\n').map((line) => line.trim());
+    let parsedResponse;
+
+    try {
+      const sanitizedContent = content.replace(/^[^{]*|[^}]*$/g, '');
+      parsedResponse = JSON.parse(sanitizedContent);
+    } catch (parseError) {
+      console.warn('Failed to parse JSON. Falling back to manual extraction.');
+
+      const lines = content.split('\n').map(line => line.trim()).filter(line => line);
+      const scene = lines[0];
+      const optionA = lines[1]?.replace(/^A:\s*/, '') || 'Option A not found.';
+      const optionB = lines[2]?.replace(/^B:\s*/, '') || 'Option B not found.';
+
+      parsedResponse = { scene, options: { A: optionA, B: optionB } };
+    }
+
+    const { scene, options } = parsedResponse;
+
+    if (!options.A || !options.B) {
+      throw new Error('Missing options A or B in the response.');
+    }
 
     gameState.progress.push({ choice, result: scene });
-
     gameState.currentChoice++;
 
     if (gameState.currentChoice >= MAX_CHOICES) {
@@ -126,16 +189,16 @@ app.post('/adventure', async (req, res) => {
         ? 'Congratulations! You completed your quest.'
         : 'Your quest ends in failure, but every adventure teaches a lesson.';
 
-      return res.json({ scene: limitSentences(scene), finalMessage });
+      return res.json({ scene, finalMessage });
     }
 
     res.json({
-      scene: limitSentences(scene),
-      optionA,
-      optionB,
+      scene,
+      optionA: options.A,
+      optionB: options.B,
     });
   } catch (error) {
-    console.error('Error generating next scene:', error);
+    console.error('Error processing your choice:', error);
     res.status(500).send('Error processing your choice.');
   }
 });
